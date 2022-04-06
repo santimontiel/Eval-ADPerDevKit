@@ -9,6 +9,8 @@ warnings.simplefilter(action='ignore', category=pd.core.common.SettingWithCopyWa
 
 from iou_3d_functions import compute_box_3d_pandas
 from iou3d import iou3d
+
+from scipy.optimize import linear_sum_assignment
     
 # -- Main function --
 def main(args=None):
@@ -19,10 +21,10 @@ def main(args=None):
     # EVAL_FILE ="detections/eval_itsc_01.csv"
     # GT_FILE = "detections.csv"
     # EVAL_FILE = "detections.csv"
-    SCENARIO = "07_town10HD_noche"
+    SCENARIO = "06_town07_lluvia"
     SENSOR = "radar"
-    GT_FILE = "groundtruth/" + SCENARIO + ".csv"
-    EVAL_FILE = "detections_" + SENSOR + "/" + SCENARIO  + "_unique_" + SENSOR + ".csv"
+    GT_FILE = "examples/gt_" + SCENARIO + ".csv"
+    EVAL_FILE = "examples/det_" + SCENARIO  + ".csv"
 
     DISTANCE = 75
 
@@ -88,6 +90,7 @@ def main(args=None):
     df_groundtruth['timestamp'] = df_groundtruth['timestamp'].round(3)
     df_detections['timestamp'] = df_detections['timestamp'].round(3)
 
+    tp, fp, fn = 0, 0, 0
     # -- Iterate through all categories.
     for category in CATEGORIES:
 
@@ -104,6 +107,61 @@ def main(args=None):
             # -- Associate groundtruth and detections to current frame according to timestamp.
             df_gt_frame = df_gt_category[df_gt_category['frame'] == frame]
             df_det_frame = df_det_category[df_det_category['timestamp'] == df_gt_frame['timestamp'].iloc[0]]
+
+            df_gt_frame_copy, df_det_frame_copy = df_gt_frame.copy(), df_det_frame.copy()
+
+            # -- Create cost matrix for current frame.
+            n_gt_objs = len(df_gt_frame_copy)
+            n_det_objs = len(df_det_frame_copy)
+            cost_matrix = []
+            if n_gt_objs != 0 and n_det_objs != 0:
+                cost_matrix = df_gt_frame_copy.apply(
+                    lambda row_gt: df_det_frame_copy.apply(
+                        lambda row_det: iou3d(row_gt['bbox'], row_det['bbox']), axis=1).tolist(),
+                    axis=1).tolist()
+
+            if n_gt_objs != n_det_objs or cost_matrix == []:
+                if n_gt_objs < n_det_objs:
+                    cost_matrix += [[0] * n_det_objs] * (n_det_objs - n_gt_objs)
+                else:
+                    cost_matrix = list(map(lambda row_gt: row_gt + [0] * (n_gt_objs - n_det_objs), cost_matrix))
+
+                    
+            
+
+            # -- Apply linear assignment to current frame.
+            assignment = ([],[])
+            row_gt, col_det = ([], [])
+
+            # print("==================================================================")
+            if cost_matrix != []:
+                row_gt, col_det = linear_sum_assignment(cost_matrix, maximize=True)
+                assignment = linear_sum_assignment(cost_matrix, maximize=True)
+                # print(f"Row col: {row_gt}, {col_det}")
+
+            # print(cost_matrix)
+            # print(f"GT Objs: {n_gt_objs}, Det Objs: {n_det_objs}")
+
+            # -- Create assignment dataframe.
+            # df_assignment = pd.DataFrame(columns=['gt_index', 'det_index'])
+            # df_assignment['gt_index'] = row_gt
+            # df_assignment['det_index'] = col_det
+            # print(df_assignment)
+
+            for idx, element in enumerate(row_gt):
+                if cost_matrix[idx][col_det[element]] > 0.05:
+                    tp += 1
+                    # print(f"{element} is TP.")
+                elif cost_matrix[idx][col_det[element]] == 0 and idx < n_gt_objs - 1:
+                    fn += 1
+                    # print(f"{element} is FN.")
+                else:
+                    fp += 1
+                    # print(f"{element} is FP.")
+
+
+            # print("==================================================================")
+
 
             # -- Iterate through all groundtruth objects in current frame.
             for gt_index, gt_row in df_gt_frame.iterrows():
@@ -234,6 +292,10 @@ def main(args=None):
 
         # -- Close progress bar
         progress_bar.close()
+
+    print("\n\n")
+    print("Results:")
+    print(tp, fp, fn)
 
     # -- Save results to CSV
     print(f"Saving results to CSV...")
