@@ -1,8 +1,9 @@
 # -- Imports --
+from pickle import FALSE, TRUE
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-
+import matplotlib.pyplot as plt
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=pd.core.common.SettingWithCopyWarning)
@@ -22,7 +23,9 @@ def main(args=None):
     # GT_FILE = "detections.csv"
     # EVAL_FILE = "detections.csv"
     SCENARIO = "06_town07_lluvia"
+    SCENARIO = "test"
     SENSOR = "radar"
+    SCORE_VALUES = TRUE ### Detections include score values
     GT_FILE = "examples/gt_" + SCENARIO + ".csv"
     EVAL_FILE = "examples/det_" + SCENARIO  + ".csv"
 
@@ -41,8 +44,10 @@ def main(args=None):
     # -- Thresholds for evaluation.
     IOU_THRESHOLD = 0.01
     DIST_THRESHOLD = 3
-    SCORE_THRESHOLD = np.arange(0, 1.1, 0.05)
     TIMESTAMP_RANGE = 0.25
+    # -- Confidence thresholds for PR curves.
+    
+    
 
     # -- Add a column to store the original indices.
     df_groundtruth["original_index"] = df_groundtruth.index
@@ -190,6 +195,11 @@ def main(args=None):
                         best_candidate = df_det_candidates[df_det_candidates['iou'] == best_iou]
                         best_candidate = best_candidate.iloc[0]
                         
+                        if SCORE_VALUES == TRUE:
+                            score = best_candidate['score']
+                        else:
+                            score = 0.00
+
                         # -- Add the fusion as true positive to the results dataframe.
                         df_results = df_results.append(
                             {
@@ -210,6 +220,7 @@ def main(args=None):
                                 'h_det': best_candidate['h'],
                                 'status': 'tp',
                                 'iou': df_det_candidates['iou'].values[0],
+                                'score': score,
                             },
                             ignore_index=True,
                         )
@@ -244,6 +255,7 @@ def main(args=None):
                             'h_det': None,
                             'status': 'fn',
                             'iou': 0.00,
+                            'score': 0.00, ### Score not available for FN.
                         },
                         ignore_index=True,
                     )
@@ -258,7 +270,10 @@ def main(args=None):
 
                 # -- Filter if they are already processed.
                 if det_row['processed'] == False:
-
+                    if SCORE_VALUES == TRUE:
+                        score = det_row['score']
+                    else:
+                        score = 0.00
                     # -- Add to the results dataframe as false positive.
                     df_results = df_results.append(
                         {
@@ -279,6 +294,7 @@ def main(args=None):
                             'h_det': det_row['h'],
                             'status': 'fp',
                             'iou': 0.00,
+                            'score': score,
                         },
                         ignore_index=True,
                     )
@@ -302,28 +318,99 @@ def main(args=None):
     df_results.to_csv(f"hola.csv", index=False)
     print(f"Done.")
 
-    # -- Obtain a confusion matrix from the results dataframe.
-    df_confusion = df_results.groupby(['status']).count()
-    try:
-        tp = df_confusion['timestamp'].loc['tp']
-    except KeyError:
-        tp = 0
-    try:
-        fp = df_confusion['timestamp'].loc['fp']
-    except KeyError:
-        fp = 0
-    try:
-        fn = df_confusion['timestamp'].loc['fn']
-    except KeyError:
-        fn = 0
-    print(df_confusion)
+    print(f"Calculating metrics...")
+    calculate_metrics(df_results,SCORE_VALUES)
 
-    # -- Calculate precision and recall.
-    precision = tp / (tp + fp)
-    recall = tp / (tp + fn)
-    f05 = 1.25 * (precision * recall) / (0.25 * precision + recall)
-    f1 = 2 * (precision * recall) / (precision + recall)
-    f2 = 5 * (precision * recall) / (4 * precision + recall)
+
+
+
+
+def calculate_metrics(df_results,gt_score = True):
+
+    if gt_score == TRUE:
+        score_list = np.arange(0, 1.1, 0.05)
+
+        # -- Calculate precision-recall curve
+        precision_vector = []
+        recall_vector = []
+        for score in score_list:
+            res_df = df_results.copy()
+            res_df = res_df[res_df['score'] >= score]
+
+            df_confusion = res_df.groupby(['status']).count()
+            try:
+                tp = df_confusion['timestamp'].loc['tp']
+            except KeyError:
+                tp = 0
+            try:
+                fp = df_confusion['timestamp'].loc['fp']
+            except KeyError:
+                fp = 0
+            try:
+                fn = df_confusion['timestamp'].loc['fn']
+            except KeyError:
+                fn = 0
+            if tp != 0:
+                precision_vector.append(tp / (tp + fp))
+                print(tp / (tp + fp))
+                print(tp / (tp + fn))
+                recall_vector.append(tp / (tp + fn))
+            else:
+                precision_vector.append(0)
+                recall_vector.append(0)
+
+        df_confusion = df_results.groupby(['status']).count()
+        try:
+            tp = df_confusion['timestamp'].loc['tp']
+        except KeyError:
+            tp = 0
+        try:
+            fp = df_confusion['timestamp'].loc['fp']
+        except KeyError:
+            fp = 0
+        try:
+            fn = df_confusion['timestamp'].loc['fn']
+        except KeyError:
+            fn = 0
+        # print(df_confusion)
+
+        # -- Calculate precision and recall.
+        precision = tp / (tp + fp)
+        recall = tp / (tp + fn)
+        f05 = 1.25 * (precision * recall) / (0.25 * precision + recall)
+        f1 = 2 * (precision * recall) / (precision + recall)
+        f2 = 5 * (precision * recall) / (4 * precision + recall)
+        plt.figure()
+        plt.ylim(0,1)
+        plt.xlim(0,1)
+        plt.plot(recall_vector, precision_vector)
+        plt.title('Precision-recall curve')
+        plt.ylabel('Precision')
+        plt.xlabel('Recall')
+        plt.show()
+    else:
+        # -- Obtain a confusion matrix from the results dataframe.
+        df_confusion = df_results.groupby(['status']).count()
+        try:
+            tp = df_confusion['timestamp'].loc['tp']
+        except KeyError:
+            tp = 0
+        try:
+            fp = df_confusion['timestamp'].loc['fp']
+        except KeyError:
+            fp = 0
+        try:
+            fn = df_confusion['timestamp'].loc['fn']
+        except KeyError:
+            fn = 0
+        # print(df_confusion)
+
+        # -- Calculate precision and recall.
+        precision = tp / (tp + fp)
+        recall = tp / (tp + fn)
+        f05 = 1.25 * (precision * recall) / (0.25 * precision + recall)
+        f1 = 2 * (precision * recall) / (precision + recall)
+        f2 = 5 * (precision * recall) / (4 * precision + recall)
 
     # -- Print results.
     print(f"***** Results *****")
@@ -337,7 +424,6 @@ def main(args=None):
     print(f"F0.5:       {f05 * 100:.2f}%")
     print(f"F1:         {f1 * 100:.2f}%")
     print(f"F2:         {f2 * 100:.2f}%")
-
 
 
 if __name__ == "__main__":
